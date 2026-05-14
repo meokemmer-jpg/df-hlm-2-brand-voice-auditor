@@ -1,0 +1,138 @@
+# DF-HLM-2 Brand-Voice-Auditor fuer HeyLou-Marketing-Wave-2 [CRUX-MK]
+
+df_id: DF-HLM-2
+df_name: heylou-brand-voice-auditor
+version: 0.1.0-PHASE-1-MOCK
+status: ACTIVE-MOCK-FIRST
+crux-mk: true
+
+description: |
+  Deterministischer Brand-Voice-Auditor fuer HeyLou-Marketing-Wave-2.
+  Phase 1 nutzt lokale Mock-Texte. Live-Instagram/LinkedIn bleiben default-disabled
+  und brauchen explizite ENV-Gates plus PHRONESIS_TICKET.
+
+k11_cascade_containment:
+  cascade_isolation: hard
+  failure_blast_radius: 2
+  dependency_dlq_separate: true
+  dependency_dlq_strategy: "per source eigene DLQ; Instagram-Ausfall stoppt LinkedIn/Blog/Email nicht"
+
+k12_distillation_resistenz:
+  provenance_required_in_output: true
+  provenance_fields:
+    - source_url
+    - timestamp
+    - score_components
+  non_llm_validation_layer: true
+  detector_type: regex-deterministic
+
+k13_independent_ground_truth:
+  external_anchor_type: social_media_api
+  external_anchors:
+    - instagram
+    - linkedin
+  pre_action_domain_check: true
+  allowed_source_domains:
+    - instagram.com
+    - linkedin.com
+    - hey-lou.com
+    - mail.local
+    - local.test
+
+k14_human_override_decay:
+  override_complexity: single_command
+  stop_flag_path: /tmp/df-hlm-2.stop
+  martin_review_cadence: monthly
+
+k15_entropy_budget:
+  entropy_added_loc_estimate: 380
+  entropy_justified_by_rho: "EUR 55-75k/Jahr Brand-Konsistenz-Schutz"
+
+k16_concurrent_spawn_mutex:
+  concurrent_spawn_protection: both
+  lock_dir: /tmp/df-hlm-2.lock
+  lock_stale_age_h: 6
+  engine_pgrep_check: true
+  resource_governor_max_concurrent_runs: 1
+
+lose_coupling:
+  LC1_graceful_degradation:
+    modes:
+      - full
+      - degraded_instagram_api
+      - degraded_linkedin_api
+      - degraded_blog_rss
+      - standalone_email_only
+  LC2_direct_mode_fallback:
+    direct_mode_available: true
+    capability: 0.60
+    trigger: ">=2 Social-APIs unreachable >30s"
+  LC3_circuit_breaker:
+    timeout_s: 30
+    open_threshold: 3
+    scope: per_api
+  LC4_failure_isolation:
+    state_externalization: true
+    idempotent: true
+    idempotency_basis: "sha256(text_content + timestamp)"
+  LC5_health_check_independence:
+    health_check_dependencies: []
+
+env_var_gating:
+  default_mode: mock
+  real_instagram:
+    env: DF_HLM_2_REAL_INSTAGRAM_ENABLED
+    required_value: "true"
+  real_linkedin:
+    env: DF_HLM_2_REAL_LINKEDIN_ENABLED
+    required_value: "true"
+  phronesis_ticket:
+    env: PHRONESIS_TICKET
+    pattern: "^PT-2026-[A-Z0-9]{2}-[A-Z0-9]{3}$"
+
+brand_voice:
+  required_vocabulary:
+    - "Hey Lou"
+    - "Direct-Booking"
+    - "Self-Check-in"
+    - "60 Sekunden"
+    - "Selbstbestimmt"
+    - "Heritage"
+    - "Authentisch"
+    - "Lokal-Anker"
+  forbidden_vocabulary:
+    - "Buchen Sie jetzt"
+    - "Special Offer"
+    - "Booking.com"
+    - "Expedia"
+    - "HRS"
+    - "Luxus"
+    - "garantiert guenstig"
+    - "Schnaeppchen"
+    - "Nur heute"
+    - "Discount"
+    - "Last Minute Deal"
+  required_hashtags:
+    - "#HeyLou"
+    - "#DirectBooking"
+    - "#<hotelname>"
+  auto_patch_replacements:
+    "Buchen Sie jetzt": "Entdecke deinen Aufenthalt"
+    "Special Offer": "Direct-Booking Vorteil"
+    "Booking.com": "Direct-Booking auf hey-lou.com"
+    "Expedia": "Direct-Booking auf hey-lou.com"
+    "HRS": "Direct-Booking auf hey-lou.com"
+    "Luxus": "charaktervoller Komfort"
+    "garantiert guenstig": "transparent direkt"
+    "Schnaeppchen": "fairer Direktvorteil"
+    "Nur heute": "direkt verfuegbar"
+    "Discount": "Direktvorteil"
+    "Last Minute Deal": "spontaner Direktaufenthalt"
+
+operations:
+  output_path: ~/Projects/dark-factories/df-hlm-2-brand-voice-auditor/
+  reports_output_path: branch-hub/reports/
+  aggregate_output_path: branch-hub/aggregates/
+  audit_log_path: branch-hub/audit/df-hlm-2-brand-voice.jsonl
+  stop_flag_path: /tmp/df-hlm-2.stop
+  health_file_path: /tmp/df-hlm-2-health.json

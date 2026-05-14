@@ -1,0 +1,117 @@
+{
+  "average_score": 3.0,
+  "df_id": "DF-HLM-2",
+  "external_anchor_validation": {
+    "available": [],
+    "external_anchor_type": "social_media_api",
+    "required": [
+      "instagram",
+      "linkedin"
+    ],
+    "valid": false
+  },
+  "failures": [],
+  "generated_at": "2026-05-14T04:07:46Z",
+  "max_score": 3.0,
+  "min_score": 3.0,
+  "mode": "standalone_email_only",
+  "results": [
+    {
+      "found_forbidden": [],
+      "found_hashtags": [
+        "#HeyLou",
+        "#DirectBooking",
+        "#HotelHildesheim"
+      ],
+      "found_required": [
+        "Hey Lou",
+        "Direct-Booking",
+        "Self-Check-in",
+        "60 Sekunden",
+        "Selbstbestimmt",
+        "Heritage",
+        "Authentisch",
+        "Lokal-Anker"
+      ],
+      "hotel_name": "Hotel Hildesheim",
+      "idempotency_key": "7216f02831cbccd7",
+      "missing_hashtags": [],
+      "patched_text": "Hey Lou macht Direct-Booking mit Self-Check-in in 60 Sekunden. Selbstbestimmt, Heritage, Authentisch und Lokal-Anker. #HeyLou #DirectBooking #HotelHildesheim",
+      "provenance": {
+        "detector": "regex-deterministic",
+        "score_components": {
+          "forbidden_count": 0,
+          "forbidden_score": 1.0,
+          "hashtag_count": 3,
+          "hashtag_score": 1.0,
+          "required_count": 8,
+          "required_score": 1.0,
+          "total_score": 3.0
+        },
+        "source_url": "mailto:sent@mail.local",
+        "timestamp": "2026-05-14T04:07:46Z"
+      },
+      "score_components": {
+        "forbidden_count": 0,
+        "forbidden_score": 1.0,
+        "hashtag_count": 3,
+        "hashtag_score": 1.0,
+        "required_count": 8,
+        "required_score": 1.0,
+        "total_score": 3.0
+      },
+      "source": "email",
+      "source_url": "mailto:sent@mail.local",
+      "timestamp": "2026-05-14T04:07:46Z"
+    },
+    {
+      "found_forbidden": [],
+      "found_hashtags": [
+        "#HeyLou",
+        "#DirectBooking",
+        "#HotelHildesheim"
+      ],
+      "found_required": [
+        "Hey Lou",
+        "Direct-Booking",
+        "Self-Check-in",
+        "60 Sekunden",
+        "Selbstbestimmt",
+        "Heritage",
+        "Authentisch",
+        "Lokal-Anker"
+      ],
+      "hotel_name": "Hotel Hildesheim",
+      "idempotency_key": "7216f02831cbccd7",
+      "missing_hashtags": [],
+      "patched_text": "Hey Lou macht Direct-Booking mit Self-Check-in in 60 Sekunden. Selbstbestimmt, Heritage, Authentisch und Lokal-Anker. #HeyLou #DirectBooking #HotelHildesheim",
+      "provenance": {
+        "detector": "regex-deterministic",
+        "score_components": {
+          "forbidden_count": 0,
+          "forbidden_score": 1.0,
+          "hashtag_count": 3,
+          "hashtag_score": 1.0,
+          "required_count": 8,
+          "required_score": 1.0,
+          "total_score": 3.0
+        },
+        "source_url": "https://hey-lou.com/blog/mock",
+        "timestamp": "2026-05-14T04:07:46Z"
+      },
+      "score_components": {
+        "forbidden_count": 0,
+        "forbidden_score": 1.0,
+        "hashtag_count": 3,
+        "hashtag_score": 1.0,
+        "required_count": 8,
+        "required_score": 1.0,
+        "total_score": 3.0
+      },
+      "source": "blog",
+      "source_url": "https://hey-lou.com/blog/mock",
+      "timestamp": "2026-05-14T04:07:46Z"
+    }
+  ],
+  "sample_count": 2
+}
