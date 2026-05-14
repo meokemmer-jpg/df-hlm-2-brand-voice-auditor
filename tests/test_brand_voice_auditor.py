@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -30,6 +32,13 @@ BAD_TEXT = (
 @pytest.fixture
 def auditor(tmp_path: Path) -> BrandVoiceAuditor:
     return BrandVoiceAuditor(base_dir=tmp_path)
+
+
+@pytest.fixture
+def engine(tmp_path: Path) -> BrandVoiceAuditor:
+    auditor = BrandVoiceAuditor(base_dir=tmp_path)
+    auditor.lock_dir = tmp_path / "df-hlm-2.lock"
+    return auditor
 
 
 def sample(text: str = GOOD_TEXT, source: str = "instagram", hotel: str = "Hotel Hildesheim") -> TextSample:
@@ -189,3 +198,78 @@ def test_score_aggregation_multi_source(auditor: BrandVoiceAuditor) -> None:
     data = json.loads(aggregate_path.read_text(encoding="utf-8"))
     assert data["results"][0]["source"] == "instagram"
     assert data["results"][1]["source"] == "linkedin"
+
+
+def test_pii_scrubbed_in_output_with_kemmer_name(engine: BrandVoiceAuditor) -> None:
+    result = engine.run([sample(text=f"{GOOD_TEXT} Martin und Imke empfehlen den Aufenthalt.", source="email")])
+    report_content = Path(result["report_path"]).read_text(encoding="utf-8")
+    aggregate_content = Path(result["aggregate_path"]).read_text(encoding="utf-8")
+    assert "Martin" not in report_content
+    assert "Imke" not in report_content
+    assert "Martin" not in aggregate_content
+    assert "Imke" not in aggregate_content
+
+
+def test_k13_pre_action_verification_env_tag_block(
+    engine: BrandVoiceAuditor,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DF_ENV_TAG", "prod")
+    monkeypatch.setenv("DF_HLM_2_REAL_INSTAGRAM_ENABLED", "true")
+    monkeypatch.setenv("PHRONESIS_TICKET", "PT-2026-AB-123")
+    engine.fetchers["instagram"] = lambda: [sample(source="instagram")]
+    with pytest.raises(RuntimeError) as exc_info:
+        engine.run(sources=["instagram"])
+    assert "K13" in str(exc_info.value)
+
+
+def test_mock_provenance_explicit_in_output(engine: BrandVoiceAuditor) -> None:
+    result = engine.run()
+    report_content = Path(result["report_path"]).read_text(encoding="utf-8")
+    aggregate_data = json.loads(Path(result["aggregate_path"]).read_text(encoding="utf-8"))
+    assert '"mode": "mock"' in report_content
+    assert aggregate_data["output_provenance"]["mode"] == "mock"
+
+
+def test_k16_mutex_blocks_concurrent_spawn(tmp_path: Path) -> None:
+    first = BrandVoiceAuditor(base_dir=tmp_path)
+    second = BrandVoiceAuditor(base_dir=tmp_path)
+    shared_lock = tmp_path / "df-hlm-2.lock"
+    first.lock_dir = shared_lock
+    second.lock_dir = shared_lock
+
+    started = threading.Event()
+    release = threading.Event()
+    outcomes: dict[str, object] = {}
+
+    def slow_persist(aggregate: dict[str, object]) -> tuple[Path, Path]:
+        started.set()
+        release.wait(timeout=2)
+        path = tmp_path / "branch-hub" / "reports" / "held.md"
+        aggregate_path = tmp_path / "branch-hub" / "aggregates" / "held.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        aggregate_path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("held", encoding="utf-8")
+        aggregate_path.write_text("{}", encoding="utf-8")
+        return path, aggregate_path
+
+    first.persist_outputs = slow_persist  # type: ignore[method-assign]
+
+    def run_first() -> None:
+        outcomes["first"] = first.run([sample(source="email")])
+
+    thread = threading.Thread(target=run_first)
+    thread.start()
+    assert started.wait(timeout=1)
+    time.sleep(0.05)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        second.run([sample(source="email")])
+    outcomes["second_error"] = str(exc_info.value)
+
+    release.set()
+    thread.join(timeout=2)
+
+    assert thread.is_alive() is False
+    assert isinstance(outcomes["first"], dict)
+    assert "K16-VETO" in str(outcomes["second_error"])

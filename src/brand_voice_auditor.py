@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -19,6 +20,19 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any, Callable, Iterable
 from urllib.parse import urlparse
+
+COMMON_ROOT = str(Path(__file__).resolve().parents[2])
+if COMMON_ROOT not in sys.path:
+    sys.path.insert(0, COMMON_ROOT)
+
+from _df_common.pii_scrubber import PIIScrubber, scrub_audit_payload
+from _df_common.welle_b2_patches import (
+    K13PreActionVerifier,
+    K16MutexGuard,
+    MOCK_PREFIX,
+    make_mock_url,
+    make_provenance_envelope,
+)
 
 try:  # pragma: no cover - fallback only when structlog is unavailable.
     import structlog
@@ -45,6 +59,7 @@ except Exception:  # pragma: no cover
 
 
 LOGGER = structlog.get_logger()
+ENGINE_MARKER = str(Path(__file__).resolve())
 
 REQUIRED_VOCABULARY = [
     "Hey Lou",
@@ -193,35 +208,25 @@ class CircuitBreaker:
 
 
 class RunMutex:
-    """K16 resource governor: max one concurrent run via atomic mkdir."""
+    """Backward-compatible wrapper around K16MutexGuard."""
 
     def __init__(self, lock_dir: Path, stale_age_s: int = 21_600):
-        self.lock_dir = lock_dir
+        self.lock_dir = Path(lock_dir)
         self.stale_age_s = stale_age_s
+        self._guard = K16MutexGuard(
+            lock_dir=self.lock_dir,
+            df_engine_marker=ENGINE_MARKER,
+            stale_age_hours=stale_age_s / 3600,
+        )
         self.acquired = False
 
     def acquire(self) -> bool:
-        if self.lock_dir.exists():
-            age_s = time.time() - self.lock_dir.stat().st_mtime
-            if age_s > self.stale_age_s:
-                for child in self.lock_dir.glob("*"):
-                    child.unlink(missing_ok=True)
-                self.lock_dir.rmdir()
-        try:
-            self.lock_dir.mkdir(parents=True)
-        except FileExistsError:
-            return False
-        (self.lock_dir / "pid").write_text(str(os.getpid()), encoding="utf-8")
-        (self.lock_dir / "started_at").write_text(utc_now(), encoding="utf-8")
-        self.acquired = True
-        return True
+        result = self._guard.acquire()
+        self.acquired = result.acquired
+        return result.acquired
 
     def release(self) -> None:
-        if not self.acquired:
-            return
-        for child in self.lock_dir.glob("*"):
-            child.unlink(missing_ok=True)
-        self.lock_dir.rmdir()
+        self._guard.release()
         self.acquired = False
 
 
@@ -240,10 +245,12 @@ class BrandVoiceAuditor:
         self.aggregates_dir = self.base_dir / "branch-hub" / "aggregates"
         self.audit_log_path = self.base_dir / "branch-hub" / "audit" / "df-hlm-2-brand-voice.jsonl"
         self.dlq_dir = self.base_dir / "branch-hub" / "dlq"
+        self.lock_dir = Path(os.environ.get("DF_HLM_2_LOCK_DIR", "/tmp/df-hlm-2.lock"))
         self.circuit_breaker = circuit_breaker or CircuitBreaker()
         self.fetchers = fetchers or {}
+        self.pii_scrubber = PIIScrubber(enabled=True, kemmer_names_enabled=True)
 
-    def live_api_enabled(self, source: str) -> bool:
+    def real_api_requested(self, source: str) -> bool:
         env_by_source = {
             "instagram": "DF_HLM_2_REAL_INSTAGRAM_ENABLED",
             "linkedin": "DF_HLM_2_REAL_LINKEDIN_ENABLED",
@@ -251,26 +258,42 @@ class BrandVoiceAuditor:
         env_name = env_by_source.get(source)
         if env_name is None:
             return False
-        if os.environ.get(env_name, "").lower() != "true":
+        return os.environ.get(env_name, "").lower() == "true"
+
+    def verify_real_mode_dispatch(self) -> None:
+        verifier = K13PreActionVerifier(
+            expected_env_tag="dev",
+            expected_mount_pattern="/Users/make",
+            blast_radius_class="state-only",
+        )
+        result = verifier.verify()
+        if not result.ok:
+            raise RuntimeError(f"K13-VETO: {result.failed_check}")
+
+    def live_api_enabled(self, source: str) -> bool:
+        if not self.real_api_requested(source):
             return False
         ticket = os.environ.get("PHRONESIS_TICKET", "")
         return re.fullmatch(r"PT-2026-[A-Z0-9]{2}-[A-Z0-9]{3}", ticket) is not None
 
     def default_mock_samples(self) -> list[TextSample]:
         ts = utc_now()
+        mock_blog_id = f"hildesheim-{hashlib.sha256(ts.encode('utf-8')).hexdigest()[:8]}"
         text = (
             "Hey Lou macht Direct-Booking mit Self-Check-in in 60 Sekunden. "
             "Selbstbestimmt, Heritage, Authentisch und Lokal-Anker. "
             "#HeyLou #DirectBooking #HotelHildesheim"
         )
         return [
-            TextSample("email", text, "Hotel Hildesheim", "mailto:sent@mail.local", ts),
-            TextSample("blog", text, "Hotel Hildesheim", "https://hey-lou.com/blog/mock", ts),
+            TextSample("email", text, "Hotel Hildesheim", f"mailto:{MOCK_PREFIX}sent@mail.local", ts),
+            TextSample("blog", text, "Hotel Hildesheim", make_mock_url("https://hey-lou.com/blog", mock_blog_id), ts),
         ]
 
     def fetch_source(self, source: str) -> list[TextSample]:
         if self.circuit_breaker.is_open(source):
             raise RuntimeError(f"circuit breaker open for {source}")
+        if source in {"instagram", "linkedin"} and self.real_api_requested(source):
+            self.verify_real_mode_dispatch()
         if source in {"instagram", "linkedin"} and not self.live_api_enabled(source):
             return []
         fetcher = self.fetchers.get(source)
@@ -288,12 +311,14 @@ class BrandVoiceAuditor:
                 samples.extend(fetched)
                 self.circuit_breaker.record_success(source)
             except Exception as exc:
+                if isinstance(exc, RuntimeError) and str(exc).startswith("K13-VETO"):
+                    raise
                 failures.append(source)
                 self.circuit_breaker.record_failure(source)
-                append_jsonl(
-                    self.dlq_dir / f"{source}.jsonl",
-                    {"source": source, "error": str(exc), "timestamp": utc_now()},
+                dlq_payload = self.pii_scrubber.scrub_dict_recursive(
+                    {"source": source, "error": str(exc), "timestamp": utc_now()}
                 )
+                append_jsonl(self.dlq_dir / f"{source}.jsonl", dlq_payload)
                 LOGGER.warning("source_fetch_failed", source=source, error=str(exc))
         if not samples:
             samples = self.default_mock_samples()
@@ -398,8 +423,25 @@ class BrandVoiceAuditor:
             "results": [asdict(result) for result in results],
         }
 
+    def is_mock_run(self, samples: list[TextSample]) -> bool:
+        if not samples:
+            return True
+        for sample in samples:
+            if sample.source_url.startswith(f"mailto:{MOCK_PREFIX}"):
+                continue
+            if f"/{MOCK_PREFIX}" in sample.source_url:
+                continue
+            return False
+        return True
+
     def render_markdown_report(self, aggregate: dict[str, Any]) -> str:
+        provenance = aggregate["output_provenance"]
+        frontmatter = json.dumps(provenance, ensure_ascii=False, sort_keys=True)
         lines = [
+            "---",
+            frontmatter,
+            "---",
+            "",
             "# DF-HLM-2 Daily Brand-Voice Audit",
             "",
             f"- Generated: {aggregate['generated_at']}",
@@ -434,27 +476,48 @@ class BrandVoiceAuditor:
         day = aggregate["generated_at"][:10]
         report_path = self.reports_dir / f"DF-HLM-2-audit-{day}-{run_hash}.md"
         json_path = self.aggregates_dir / f"DF-HLM-2-aggregate-{day}-{run_hash}.json"
-        atomic_write(report_path, self.render_markdown_report(aggregate))
-        atomic_write(json_path, json.dumps(aggregate, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
-        append_jsonl(self.audit_log_path, {"event": "audit_run", "report": str(report_path), "aggregate": str(json_path), "timestamp": utc_now()})
+        report_content = self.pii_scrubber.scrub(self.render_markdown_report(aggregate))
+        aggregate_scrubbed = self.pii_scrubber.scrub_dict_recursive(aggregate)
+        atomic_write(report_path, report_content)
+        atomic_write(json_path, json.dumps(aggregate_scrubbed, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+        event_name = "mock_run_complete" if aggregate["output_provenance"]["mode"] == "mock" else "run_complete"
+        audit_entry = scrub_audit_payload(
+            {
+                "event": event_name,
+                "report": str(report_path),
+                "aggregate": str(json_path),
+                "timestamp": utc_now(),
+            }
+        )
+        append_jsonl(self.audit_log_path, audit_entry)
         return report_path, json_path
 
     def health_check(self) -> dict[str, Any]:
         return {"df_id": "DF-HLM-2", "status": "ok", "dependencies": [], "timestamp": utc_now()}
 
     def run(self, samples: list[TextSample] | None = None, sources: Iterable[str] | None = None) -> dict[str, Any]:
-        if samples is None:
-            samples, failures = self.collect_samples(sources)
-        else:
-            failures = []
-        results = [self.audit_sample(sample) for sample in samples]
-        mode = self.determine_mode(failures, samples)
-        aggregate = self.aggregate_results(results, mode, failures)
-        aggregate["external_anchor_validation"] = self.external_anchor_validation(samples)
-        report_path, json_path = self.persist_outputs(aggregate)
-        aggregate["report_path"] = str(report_path)
-        aggregate["aggregate_path"] = str(json_path)
-        return aggregate
+        with K16MutexGuard(lock_dir=self.lock_dir, df_engine_marker=ENGINE_MARKER):
+            if samples is None:
+                samples, failures = self.collect_samples(sources)
+            else:
+                failures = []
+            results = [self.audit_sample(sample) for sample in samples]
+            mode = self.determine_mode(failures, samples)
+            aggregate = self.aggregate_results(results, mode, failures)
+            aggregate["external_anchor_validation"] = self.external_anchor_validation(samples)
+            aggregate["output_provenance"] = make_provenance_envelope(
+                df_id="DF-HLM-2",
+                timestamp_iso=aggregate["generated_at"],
+                is_mock=self.is_mock_run(samples),
+                activation_gate_id=os.environ.get("PHRONESIS_TICKET") or None,
+                source_hash=hashlib.sha256(
+                    json.dumps(aggregate["results"], ensure_ascii=False, sort_keys=True).encode("utf-8")
+                ).hexdigest(),
+            )
+            report_path, json_path = self.persist_outputs(aggregate)
+            aggregate["report_path"] = str(report_path)
+            aggregate["aggregate_path"] = str(json_path)
+            return aggregate
 
 
 def main() -> int:
@@ -462,19 +525,23 @@ def main() -> int:
     parser.add_argument("--base-dir", default=None)
     parser.add_argument("--lock-dir", default=os.environ.get("DF_HLM_2_LOCK_DIR", "/tmp/df-hlm-2.lock"))
     args = parser.parse_args()
-    mutex = RunMutex(Path(args.lock_dir))
-    lock_already_held = os.environ.get("DF_HLM_2_LOCK_HELD") == "true"
-    if not lock_already_held and not mutex.acquire():
-        print(f"[K16-VETO] Concurrent DF-HLM-2 instance detected at {args.lock_dir}")
-        return 3
+    previous_lock_dir = os.environ.get("DF_HLM_2_LOCK_DIR")
+    os.environ["DF_HLM_2_LOCK_DIR"] = args.lock_dir
     try:
         auditor = BrandVoiceAuditor(Path(args.base_dir) if args.base_dir else None)
         result = auditor.run()
         print(json.dumps({"report_path": result["report_path"], "aggregate_path": result["aggregate_path"], "average_score": result["average_score"]}, ensure_ascii=False))
         return 0
+    except RuntimeError as exc:
+        if "K16-VETO" in str(exc):
+            print(f"[K16-VETO] Concurrent DF-HLM-2 instance detected at {args.lock_dir}")
+            return 3
+        raise
     finally:
-        if not lock_already_held:
-            mutex.release()
+        if previous_lock_dir is None:
+            os.environ.pop("DF_HLM_2_LOCK_DIR", None)
+        else:
+            os.environ["DF_HLM_2_LOCK_DIR"] = previous_lock_dir
 
 
 if __name__ == "__main__":
