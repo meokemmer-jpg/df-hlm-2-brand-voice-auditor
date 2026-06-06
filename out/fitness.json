@@ -1,0 +1,8 @@
+{
+  "df": "df-hlm-2-brand-voice-auditor",
+  "ts": "2026-06-05T14:10:54.409945+00:00",
+  "ok": true,
+  "bytes": 2880,
+  "model": "qwen2.5:14b-instruct",
+  "duration_s": 80.1
+}
