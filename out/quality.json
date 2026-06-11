@@ -1,9 +1,9 @@
 {
   "df": "df-hlm-2-brand-voice-auditor",
-  "ts": "2026-06-10T11:11:57.643357+00:00",
+  "ts": "2026-06-11T01:12:40.287173+00:00",
   "maturity": "TESTED",
   "maturity_level": 4,
   "evidence_grade": 4,
-  "wargame_verdict": null,
+  "wargame_verdict": "CONDITIONAL",
   "crux": "[CRUX-MK]"
 }
