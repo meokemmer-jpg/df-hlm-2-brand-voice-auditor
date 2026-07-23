@@ -1,10 +1,10 @@
 {
   "df": "df-hlm-2-brand-voice-auditor",
-  "ts": "2026-07-21T03:55:58.670083+00:00",
+  "ts": "2026-07-22T03:56:15.965263+00:00",
   "maturity": "CODE",
   "maturity_level": 3,
   "evidence_grade": 2,
   "grade_basis": "pytest-gruen (LLM-selbstgeschrieben), codex_verify=UNKNOWN -> max Grade-2 (CODE), nie TESTED/4",
-  "wargame_verdict": "CONDITIONAL",
+  "wargame_verdict": null,
   "crux": "[CRUX-MK]"
 }
